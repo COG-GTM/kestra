@@ -104,7 +104,13 @@ public class PostgresRepository<T> extends io.kestra.jdbc.AbstractJdbcRepository
         int totalCount = context.fetchCount(select);
         Result<R> records = this.pageable(select, pageable).fetch();
 
-        return new ArrayListTotal<>(records.map(mapper), records.isEmpty() ? 0 : totalCount);
+        if (records.isEmpty()) {
+            return new ArrayListTotal<>(List.of(), 0);
+        }
+
+        // Count and page are separate statements, so a row committed in between must not leave the total below what was returned.
+        long returnedUpTo = pageable.getOffset() - pageable.getSize() + records.size();
+        return new ArrayListTotal<>(records.map(mapper), Math.max(totalCount, returnedUpTo));
     }
 
     @Override
