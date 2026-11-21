@@ -62,7 +62,7 @@ public abstract class AbstractJdbcRepository<T> {
     protected Table<Record> table;
 
     /** Lazily loaded and cached by {@link #sortableColumns()}: the schema does not change at runtime. */
-    private volatile Map<String, String> sortableColumns;
+    private volatile Map<String, Field<?>> sortableColumns;
 
     @SuppressWarnings("unchecked")
     public AbstractJdbcRepository(
@@ -402,7 +402,7 @@ public abstract class AbstractJdbcRepository<T> {
 
     public <R extends Record> SelectConditionStep<R> sort(SelectConditionStep<R> select, Pageable pageable) {
         if (pageable != null && pageable.getSort().isSorted()) {
-            Map<String, String> sortableColumns = this.sortableColumns();
+            Map<String, Field<?>> sortableColumns = this.sortableColumns();
 
             pageable
                 .getSort()
@@ -414,7 +414,7 @@ public abstract class AbstractJdbcRepository<T> {
                         throw new IllegalArgumentException("Invalid sort field");
                     }
 
-                    String column = sortableColumns.get(camelToSnake(property).toLowerCase());
+                    Field<?> column = sortableColumns.get(camelToSnake(property).toLowerCase());
                     if (column == null) {
                         column = sortableColumns.get(property.toLowerCase());
                     }
@@ -422,9 +422,15 @@ public abstract class AbstractJdbcRepository<T> {
                         throw new IllegalArgumentException("The sort field '%s' does not exist on this resource.".formatted(property));
                     }
 
-                    Field<Object> field = DSL.field(DSL.name(column));
+                    Field<Object> field = DSL.field(DSL.name(column.getName()));
+                    boolean ascending = order.getDirection() == Sort.Order.Direction.ASC;
+                    SortField<Object> sortField = ascending ? field.asc() : field.desc();
+                    // NULLS FIRST/LAST is only kept on nullable columns, as it prevents the database from serving the sort from an index.
+                    if (column.getDataType().nullable()) {
+                        sortField = ascending ? sortField.nullsFirst() : sortField.nullsLast();
+                    }
 
-                    select.orderBy(order.getDirection() == Sort.Order.Direction.ASC ? field.asc().nullsFirst() : field.desc().nullsLast());
+                    select.orderBy(sortField);
                 });
         }
 
@@ -434,8 +440,8 @@ public abstract class AbstractJdbcRepository<T> {
     /**
      * The columns of {@link #table} that a client may sort on, keyed by their lowercased name, excluding {@link #NON_SORTABLE_COLUMNS}.
      */
-    private Map<String, String> sortableColumns() {
-        Map<String, String> columns = this.sortableColumns;
+    private Map<String, Field<?>> sortableColumns() {
+        Map<String, Field<?>> columns = this.sortableColumns;
         if (columns == null) {
             synchronized (this) {
                 columns = this.sortableColumns;
@@ -448,11 +454,11 @@ public abstract class AbstractJdbcRepository<T> {
         return columns;
     }
 
-    private Map<String, String> loadSortableColumns() {
+    private Map<String, Field<?>> loadSortableColumns() {
         return this.dslContextWrapper.transactionResult(configuration ->
         {
             String tableName = this.table.getName();
-            Map<String, String> columns = new HashMap<>();
+            Map<String, Field<?>> columns = new HashMap<>();
             // Matching by name ourselves, case-insensitively, rather than relying on Meta#getTables(String) —
             // dialects disagree on the case a bare (unquoted) table name is reported back in, e.g. H2 reports
             // "FLOWS" for a table created as "flows".
@@ -464,7 +470,7 @@ public abstract class AbstractJdbcRepository<T> {
                 for (Field<?> field : metaTable.fields()) {
                     String name = field.getName();
                     if (!NON_SORTABLE_COLUMNS.contains(name.toLowerCase())) {
-                        columns.put(name.toLowerCase(), name);
+                        columns.put(name.toLowerCase(), field);
                     }
                 }
             }

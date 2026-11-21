@@ -94,27 +94,23 @@ public class PostgresRepository<T> extends io.kestra.jdbc.AbstractJdbcRepository
             .set(excluded(fields));
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public <R extends Record, E> ArrayListTotal<E> fetchPage(DSLContext context, SelectConditionStep<R> select, Pageable pageable, RecordMapper<R, E> mapper) {
-        Result<Record> results = this.limit(
-            context.select(DSL.asterisk(), DSL.count().over().as("total_count"))
-                .from(
-                    this
-                        .sort(select, pageable)
-                        .asTable("page")
-                )
-                .where(DSL.noCondition()),
-            pageable
-        )
-            .fetch();
+        if (pageable == null || pageable.getSize() == -1) {
+            Result<R> records = this.sort(select, pageable).fetch();
+            return new ArrayListTotal<>(records.map(mapper), records.size());
+        }
 
-        Integer totalCount = !results.isEmpty() ? results.getFirst().get("total_count", Integer.class) : 0;
+        int totalCount = context.fetchCount(select);
+        Result<R> records = this.pageable(select, pageable).fetch();
 
-        List<E> map = results
-            .map((Record record) -> mapper.map((R) record));
+        if (records.isEmpty()) {
+            return new ArrayListTotal<>(List.of(), 0);
+        }
 
-        return new ArrayListTotal<>(map, totalCount);
+        // Count and page are separate statements, so a row committed in between must not leave the total below what was returned.
+        long returnedUpTo = pageable.getOffset() - pageable.getSize() + records.size();
+        return new ArrayListTotal<>(records.map(mapper), Math.max(totalCount, returnedUpTo));
     }
 
     @Override
